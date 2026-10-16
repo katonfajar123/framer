@@ -3,6 +3,7 @@ name = "framer"
 version = "0.1.0"
 description = "A quiet, local-first personal media gallery"
 authors = ["Framer"]
+license = "MIT"
 edition = "2021"
 
 [lib]

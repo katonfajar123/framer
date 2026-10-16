@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Laporkan kerentanan keamanan
+    url: https://github.com/katonfajar123/framer/security/advisories/new
+    about: Laporkan kerentanan secara privat. Jangan membuka issue publik untuk masalah keamanan.

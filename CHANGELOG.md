@@ -62,3 +62,5 @@ Entri hanya ditambahkan di akhir berkas, dikelompokkan per tanggal, dan memakai 
 ### 2026-10-16
 
 - `08:48:54 +07:00` `docs` — Merevisi kebijakan changelog di `AGENTS.md`: kategori tetap, tetapi changelog kini append-only, dikelompokkan per tanggal, dan setiap entri memakai cap waktu tepat hingga detik.
+- `08:52:25 +07:00` `docs` — Menambahkan `LICENSE` (MIT), `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, dan `SECURITY.md`, serta bagian Contributing dan License pada `README.md` dan tautan ke `CONTRIBUTING.md` dari `AGENTS.md`, agar repository siap dibuka sebagai proyek open source.
+- `08:52:25 +07:00` `chore` — Menambahkan templat issue (laporan bug dan usulan fitur) serta templat pull request di `.github`, dan mencantumkan lisensi MIT pada `package.json`, `package-lock.json`, dan `src-tauri/Cargo.toml`.

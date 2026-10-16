@@ -1,6 +1,6 @@
 # Aturan Kerja Agen — Framer
 
-Dokumen ini berlaku untuk setiap agen atau kontributor yang mengubah repository ini.
+Dokumen ini berlaku untuk setiap agen atau kontributor yang mengubah repository ini. Panduan untuk kontributor umum ada di [CONTRIBUTING.md](CONTRIBUTING.md); bila ada perbedaan, dokumen ini yang berlaku.
 
 ## Aturan wajib
 

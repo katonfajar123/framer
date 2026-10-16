@@ -109,3 +109,13 @@ src-tauri/src/
   WebView2 supports the codec, but have no thumbnails yet. HEIC and RAW are not supported.
 - Albums, bulk rename/move, duplicate finder, slideshow and editing are Phase 2/3.
 - The "Fit" thumbnail toggle and thumbnail size apply to all grid views.
+
+## Contributing
+
+Bug reports, ideas and pull requests are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) first and follow
+the [Code of Conduct](CODE_OF_CONDUCT.md). Project conventions (commit format, append-only changelog) are written
+in Indonesian. To report a security issue, see [SECURITY.md](SECURITY.md) and do not open a public issue.
+
+## License
+
+Framer is released under the [MIT License](LICENSE). Third-party dependencies keep their own licenses.
