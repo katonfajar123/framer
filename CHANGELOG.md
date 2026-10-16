@@ -6,6 +6,8 @@ Format mengikuti prinsip [Keep a Changelog](https://keepachangelog.com/id/1.1.0/
 
 ## [Unreleased]
 
+> Bagian ini dibekukan. Isinya ditulis sebelum kebijakan append-only, tidak punya cap waktu, dan tidak diubah lagi. Entri baru dicatat di [Log append-only](#log-append-only) pada akhir berkas.
+
 ### feat
 
 - Menambahkan Disk Usage Analyzer untuk membaca penggunaan ruang drive atau folder secara lokal.
@@ -52,3 +54,11 @@ Format mengikuti prinsip [Keep a Changelog](https://keepachangelog.com/id/1.1.0/
 - `build`: perubahan dependency, build, bundling, atau CI.
 - `chore`: pemeliharaan rutin yang tidak masuk kategori lain.
 - `issue`: masalah yang diketahui, batasan, atau tindak lanjut yang belum selesai.
+
+## Log append-only
+
+Entri hanya ditambahkan di akhir berkas, dikelompokkan per tanggal, dan memakai waktu lokal tepat hingga detik beserta offset zona waktu. Entri lama tidak boleh diubah atau dihapus; koreksi ditulis sebagai entri baru. Kategori mengikuti daftar di atas, ditambah `rilis` sebagai penanda versi. Aturan lengkap ada di `AGENTS.md`.
+
+### 2026-10-16
+
+- `08:48:54 +07:00` `docs` — Merevisi kebijakan changelog di `AGENTS.md`: kategori tetap, tetapi changelog kini append-only, dikelompokkan per tanggal, dan setiap entri memakai cap waktu tepat hingga detik.
