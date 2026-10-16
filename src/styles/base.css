@@ -1,0 +1,183 @@
+/* Design tokens. Quiet, native, content-first: the photos are the colour. */
+:root {
+  --font: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+
+  --bg: #f7f8fa;
+  --surface: #ffffff;
+  --surface-2: #f0f1f3;
+  --surface-3: #e8eaed;
+  --text: #1d1d1f;
+  --muted: #747a83;
+  --divider: #e5e7eb;
+  --accent: #007aff;
+  --accent-strong: #0067d8;
+  --accent-soft: #e8f2ff;
+  --danger: #d92d20;
+  --danger-soft: #fdecea;
+  --success: #2f9e5b;
+  --viewer: #111214;
+  --shadow-pop: 0 12px 36px rgb(0 0 0 / 0.16), 0 0 0 1px rgb(0 0 0 / 0.04);
+
+  --radius-tile: 5px;
+  --radius-control: 7px;
+  --radius-pop: 11px;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --fast: 130ms;
+  --nav: 200ms;
+
+  --thumb: 184px;
+  color-scheme: light;
+  font-family: var(--font);
+  color: var(--text);
+  background: var(--bg);
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Charcoal, never navy: dark mode stays neutral so photos keep their true colour. */
+:root[data-theme="dark"] {
+  --bg: #1c1d1f;
+  --surface: #252628;
+  --surface-2: #303134;
+  --surface-3: #3a3b3f;
+  --text: #f4f4f5;
+  --muted: #a1a4aa;
+  --divider: #3a3c3f;
+  --accent: #4da3ff;
+  --accent-strong: #75b8ff;
+  --accent-soft: rgb(77 163 255 / 0.16);
+  --danger: #ff6b5e;
+  --danger-soft: rgb(255 107 94 / 0.14);
+  --shadow-pop: 0 14px 40px rgb(0 0 0 / 0.5), 0 0 0 1px rgb(255 255 255 / 0.06);
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not([data-theme="dark"]) {
+    --bg: #1c1d1f;
+    --surface: #252628;
+    --surface-2: #303134;
+    --surface-3: #3a3b3f;
+    --text: #f4f4f5;
+    --muted: #a1a4aa;
+    --divider: #3a3c3f;
+    --accent: #4da3ff;
+    --accent-strong: #75b8ff;
+    --accent-soft: rgb(77 163 255 / 0.16);
+    --danger: #ff6b5e;
+    --danger-soft: rgb(255 107 94 / 0.14);
+    --shadow-pop: 0 14px 40px rgb(0 0 0 / 0.5), 0 0 0 1px rgb(255 255 255 / 0.06);
+    color-scheme: dark;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+body {
+  font-size: 13px;
+  line-height: 1.4;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: default;
+}
+
+h1,
+h2,
+h3,
+h4,
+p {
+  margin: 0;
+}
+
+kbd {
+  font: inherit;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.icon {
+  flex: none;
+  display: block;
+}
+
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+/* Thin, quiet scrollbars. */
+::-webkit-scrollbar {
+  width: 14px;
+  height: 14px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--muted) 38%, transparent);
+  border: 4px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--muted) 62%, transparent);
+  background-clip: padding-box;
+  border: 4px solid transparent;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.fatal {
+  height: 100%;
+  display: grid;
+  place-content: center;
+  text-align: center;
+  gap: 8px;
+  padding: 24px;
+}
+
+.fatal p {
+  color: var(--muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

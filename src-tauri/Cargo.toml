@@ -1,0 +1,38 @@
+[package]
+name = "framer"
+version = "0.1.0"
+description = "A quiet, local-first personal media gallery"
+authors = ["Framer"]
+edition = "2021"
+
+[lib]
+name = "framer_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+dunce = "1.0.5"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
+kamadak-exif = "0.6.1"
+notify = "8"
+parking_lot = "0.12"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sysinfo = "0.37"
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2"
+thiserror = "2"
+trash = "5.2.9"
+walkdir = "2"
+
+[dev-dependencies]
+tempfile = "3"
+
+# Image decoding and SQLite are far too slow unoptimised; this keeps `tauri dev` representative.
+[profile.dev.package."*"]
+opt-level = 3
