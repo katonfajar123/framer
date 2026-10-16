@@ -91,7 +91,7 @@ function scanningView(
     h(
       "p",
       null,
-      "Framer is reading file sizes only. Nothing is moved, uploaded, or deleted.",
+      "Framer counts unique files and allocated space only. C:\\Windows, links, and junctions are excluded.",
     ),
     h(
       "div",
@@ -137,6 +137,7 @@ function breadcrumb(
       parent: null,
       name: folderName(analysis.root),
       sizeBytes: analysis.totalBytes,
+      logicalBytes: analysis.logicalBytes,
       fileCount: analysis.fileCount,
       depth: 0,
     });
@@ -265,7 +266,14 @@ function fileTable(
           h("span", { title: file.path }, file.path),
           h("small", null, `Modified ${formatDateTime(file.modifiedAt)}`),
         ),
-        h("b", null, formatBytes(file.sizeBytes)),
+        h(
+          "div",
+          { class: "file-size" },
+          h("b", null, formatBytes(file.sizeBytes)),
+          file.logicalBytes !== file.sizeBytes
+            ? h("small", null, `${formatBytes(file.logicalBytes)} logical`)
+            : null,
+        ),
         h(
           "button",
           {
@@ -393,7 +401,7 @@ export function createDiskView(scroller: HTMLElement): View {
           h(
             "p",
             null,
-            "Find what's using space across your drives, without changing any files",
+            "Analyze apps, ProgramData, and personal files. C:\\Windows is excluded.",
           ),
         ),
         h(
@@ -411,7 +419,7 @@ export function createDiskView(scroller: HTMLElement): View {
           "p",
           null,
           h("strong", null, "Read-only analysis."),
-          " Framer reads names, sizes, and modified dates locally. It never uploads, moves, or deletes anything from this screen.",
+          " Framer reads names, sizes, and modified dates locally. It counts hard links once, skips links and junctions, excludes C:\\Windows, and never uploads, moves, or deletes anything.",
         ),
       ),
       h("h2", { class: "disk-section-title" }, "Drives on this PC"),
@@ -520,9 +528,13 @@ export function createDiskView(scroller: HTMLElement): View {
         h(
           "div",
           { class: "summary-stat" },
-          h("span", null, "Scanned size"),
+          h("span", null, "Allocated on disk"),
           h("strong", null, formatBytes(result.totalBytes)),
-          h("small", null, plural(result.fileCount, "file")),
+          h(
+            "small",
+            null,
+            `${formatBytes(result.logicalBytes)} logical · ${plural(result.fileCount, "unique file")}`,
+          ),
         ),
         h(
           "div",

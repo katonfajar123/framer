@@ -96,6 +96,7 @@ export interface FolderUsage {
   parent: string | null;
   name: string;
   sizeBytes: number;
+  logicalBytes: number;
   fileCount: number;
   depth: number;
 }
@@ -104,6 +105,7 @@ export interface LargeFile {
   path: string;
   name: string;
   sizeBytes: number;
+  logicalBytes: number;
   modifiedAt: number;
   extension: string;
 }
@@ -121,6 +123,7 @@ export interface CleanupRecommendation {
 export interface DiskAnalysis {
   root: string;
   totalBytes: number;
+  logicalBytes: number;
   fileCount: number;
   inaccessibleCount: number;
   folders: FolderUsage[];

@@ -4,7 +4,7 @@ use crate::error::{blocking, AppError, AppResult};
 use serde::Serialize;
 use std::{
     cmp::Reverse,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -18,7 +18,11 @@ use tauri::{AppHandle, Emitter, State};
 use walkdir::WalkDir;
 
 #[cfg(windows)]
-use std::os::windows::process::CommandExt;
+use std::{
+    ffi::c_void,
+    iter,
+    os::windows::{ffi::OsStrExt, process::CommandExt},
+};
 
 const LARGE_FILE_MIN: u64 = 100 * 1024 * 1024;
 const VERY_LARGE_FILE: u64 = 1024 * 1024 * 1024;
@@ -49,6 +53,8 @@ pub struct FolderUsage {
     pub parent: Option<String>,
     pub name: String,
     pub size_bytes: u64,
+    /// Bytes physically allocated on the volume. `size_bytes` is kept as the display value.
+    pub logical_bytes: u64,
     pub file_count: u64,
     pub depth: usize,
 }
@@ -59,6 +65,7 @@ pub struct LargeFile {
     pub path: String,
     pub name: String,
     pub size_bytes: u64,
+    pub logical_bytes: u64,
     pub modified_at: i64,
     pub extension: String,
 }
@@ -81,6 +88,7 @@ pub struct CleanupRecommendation {
 pub struct DiskAnalysis {
     pub root: String,
     pub total_bytes: u64,
+    pub logical_bytes: u64,
     pub file_count: u64,
     pub inaccessible_count: u64,
     pub folders: Vec<FolderUsage>,
@@ -105,7 +113,65 @@ struct DiskScanProgress {
 #[derive(Default, Clone, Copy)]
 struct Aggregate {
     bytes: u64,
+    logical_bytes: u64,
     files: u64,
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, Eq, Hash, PartialEq)]
+struct FileId {
+    volume_serial: u32,
+    file_index: u64,
+}
+
+#[cfg(not(windows))]
+type FileId = u64;
+
+#[cfg(windows)]
+#[repr(C)]
+#[allow(non_snake_case)]
+struct ByHandleFileInformation {
+    dwFileAttributes: u32,
+    ftCreationTimeLowDateTime: u32,
+    ftCreationTimeHighDateTime: u32,
+    ftLastAccessTimeLowDateTime: u32,
+    ftLastAccessTimeHighDateTime: u32,
+    ftLastWriteTimeLowDateTime: u32,
+    ftLastWriteTimeHighDateTime: u32,
+    dwVolumeSerialNumber: u32,
+    nFileSizeHigh: u32,
+    nFileSizeLow: u32,
+    nNumberOfLinks: u32,
+    nFileIndexHigh: u32,
+    nFileIndexLow: u32,
+}
+
+#[cfg(windows)]
+#[link(name = "Kernel32")]
+unsafe extern "system" {
+    fn CreateFileW(
+        lpFileName: *const u16,
+        dwDesiredAccess: u32,
+        dwShareMode: u32,
+        lpSecurityAttributes: *mut c_void,
+        dwCreationDisposition: u32,
+        dwFlagsAndAttributes: u32,
+        hTemplateFile: *mut c_void,
+    ) -> *mut c_void;
+    fn CloseHandle(hObject: *mut c_void) -> i32;
+    fn GetFileInformationByHandle(
+        hFile: *mut c_void,
+        lpFileInformation: *mut ByHandleFileInformation,
+    ) -> i32;
+    fn GetCompressedFileSizeW(lpFileName: *const u16, lpFileSizeHigh: *mut u32) -> u32;
+    fn GetLastError() -> u32;
+    fn GetDiskFreeSpaceW(
+        lpRootPathName: *const u16,
+        lpSectorsPerCluster: *mut u32,
+        lpBytesPerSector: *mut u32,
+        lpNumberOfFreeClusters: *mut u32,
+        lpTotalNumberOfClusters: *mut u32,
+    ) -> i32;
 }
 
 #[tauri::command]
@@ -185,10 +251,17 @@ fn scan(
     let mut inaccessible = 0u64;
     let mut file_count = 0u64;
     let mut total_bytes = 0u64;
+    let mut logical_bytes = 0u64;
+    let mut seen_file_ids = HashSet::<FileId>::new();
+    let cluster_size = allocation_unit_size(&root).unwrap_or(4 * 1024);
     let mut last_progress = Instant::now();
     let mut cancelled = false;
 
-    for entry in WalkDir::new(&root).follow_links(false).into_iter() {
+    for entry in WalkDir::new(&root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(should_traverse)
+    {
         if active_generation.load(Ordering::Relaxed) != generation {
             cancelled = true;
             break;
@@ -200,21 +273,28 @@ fn scan(
                 continue;
             }
         };
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let metadata = match entry.metadata() {
+        let metadata = match fs::symlink_metadata(entry.path()) {
             Ok(metadata) => metadata,
             Err(_) => {
                 inaccessible += 1;
                 continue;
             }
         };
-        let bytes = metadata.len();
+        if is_reparse_point(&metadata) || !metadata.is_file() {
+            continue;
+        }
+        if let Some(file_id) = physical_file_id(entry.path()) {
+            if !seen_file_ids.insert(file_id) {
+                continue;
+            }
+        }
+        let logical = metadata.len();
+        let bytes = allocated_size(entry.path(), logical, cluster_size);
         file_count += 1;
         total_bytes = total_bytes.saturating_add(bytes);
+        logical_bytes = logical_bytes.saturating_add(logical);
         if bytes >= LARGE_FILE_MIN {
-            largest_files.push(file_record(entry.path(), &metadata));
+            largest_files.push(file_record(entry.path(), &metadata, bytes));
         }
         let mut ancestor = entry.path().parent();
         while let Some(folder) = ancestor {
@@ -223,6 +303,7 @@ fn scan(
             }
             let aggregate = aggregates.entry(folder.to_path_buf()).or_default();
             aggregate.bytes = aggregate.bytes.saturating_add(bytes);
+            aggregate.logical_bytes = aggregate.logical_bytes.saturating_add(logical);
             aggregate.files += 1;
             if folder == root {
                 break;
@@ -264,6 +345,7 @@ fn scan(
     let result = DiskAnalysis {
         root: path_string(&root),
         total_bytes,
+        logical_bytes,
         file_count,
         inaccessible_count: inaccessible,
         folders,
@@ -287,7 +369,157 @@ fn scan(
     Ok(result)
 }
 
-fn file_record(path: &Path, metadata: &fs::Metadata) -> LargeFile {
+/// Never enter Windows reparse points (symlinks, junctions, mount points) and leave only
+/// the Windows system directory out of a whole-drive analysis. Program Files and ProgramData
+/// remain part of the scan.
+fn should_traverse(entry: &walkdir::DirEntry) -> bool {
+    if is_windows_system_directory(entry.path()) {
+        return false;
+    }
+    if entry.file_type().is_symlink() {
+        return false;
+    }
+    fs::symlink_metadata(entry.path())
+        .map(|metadata| !is_reparse_point(&metadata))
+        .unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn is_windows_system_directory(path: &Path) -> bool {
+    use std::path::Component;
+
+    let mut components = path.components();
+    matches!(components.next(), Some(Component::Prefix(_)))
+        && matches!(components.next(), Some(Component::RootDir))
+        && matches!(components.next(), Some(Component::Normal(name)) if name.eq_ignore_ascii_case("Windows"))
+        && components.next().is_none()
+}
+
+#[cfg(not(windows))]
+fn is_windows_system_directory(_path: &Path) -> bool {
+    false
+}
+
+#[cfg(windows)]
+fn is_reparse_point(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn is_reparse_point(_metadata: &fs::Metadata) -> bool {
+    false
+}
+
+#[cfg(windows)]
+fn physical_file_id(path: &Path) -> Option<FileId> {
+    const FILE_READ_ATTRIBUTES: u32 = 0x80;
+    const FILE_SHARE_ALL: u32 = 0x7;
+    const OPEN_EXISTING: u32 = 3;
+    const INVALID_HANDLE_VALUE: *mut c_void = -1isize as *mut c_void;
+
+    let wide = wide_path(path);
+    // SAFETY: the path is NUL-terminated; no security attributes or template handle are supplied.
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            FILE_READ_ATTRIBUTES,
+            FILE_SHARE_ALL,
+            std::ptr::null_mut(),
+            OPEN_EXISTING,
+            0,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return None;
+    }
+    let mut information = std::mem::MaybeUninit::<ByHandleFileInformation>::zeroed();
+    // SAFETY: `handle` is valid and `information` points at writable, correctly sized memory.
+    let success = unsafe { GetFileInformationByHandle(handle, information.as_mut_ptr()) };
+    // SAFETY: `handle` was returned by CreateFileW and is closed exactly once here.
+    let _ = unsafe { CloseHandle(handle) };
+    if success == 0 {
+        return None;
+    }
+    // SAFETY: a non-zero return from GetFileInformationByHandle guarantees initialization.
+    let information = unsafe { information.assume_init() };
+    Some(FileId {
+        volume_serial: information.dwVolumeSerialNumber,
+        file_index: (u64::from(information.nFileIndexHigh) << 32)
+            | u64::from(information.nFileIndexLow),
+    })
+}
+
+#[cfg(not(windows))]
+fn physical_file_id(_path: &Path) -> Option<FileId> {
+    None
+}
+
+#[cfg(windows)]
+fn allocation_unit_size(root: &Path) -> Option<u64> {
+    let wide = wide_path(root);
+    let mut sectors_per_cluster = 0u32;
+    let mut bytes_per_sector = 0u32;
+    let mut free_clusters = 0u32;
+    let mut total_clusters = 0u32;
+    // SAFETY: all pointers are valid for the duration of the call and the path is NUL-terminated.
+    let success = unsafe {
+        GetDiskFreeSpaceW(
+            wide.as_ptr(),
+            &mut sectors_per_cluster,
+            &mut bytes_per_sector,
+            &mut free_clusters,
+            &mut total_clusters,
+        )
+    };
+    (success != 0)
+        .then(|| u64::from(sectors_per_cluster) * u64::from(bytes_per_sector))
+        .filter(|size| *size > 0)
+}
+
+#[cfg(not(windows))]
+fn allocation_unit_size(_root: &Path) -> Option<u64> {
+    None
+}
+
+#[cfg(windows)]
+fn allocated_size(path: &Path, logical_bytes: u64, cluster_size: u64) -> u64 {
+    let wide = wide_path(path);
+    let mut high = 0u32;
+    // SAFETY: the path is NUL-terminated and `high` points to writable memory.
+    let low = unsafe { GetCompressedFileSizeW(wide.as_ptr(), &mut high) };
+    // INVALID_FILE_SIZE is only an error when GetLastError reports one.
+    if low != u32::MAX || unsafe { GetLastError() } == 0 {
+        (u64::from(high) << 32) | u64::from(low)
+    } else {
+        round_up_to_cluster(logical_bytes, cluster_size)
+    }
+}
+
+#[cfg(not(windows))]
+fn allocated_size(_path: &Path, logical_bytes: u64, cluster_size: u64) -> u64 {
+    round_up_to_cluster(logical_bytes, cluster_size)
+}
+
+#[cfg(windows)]
+fn wide_path(path: &Path) -> Vec<u16> {
+    path.as_os_str()
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect()
+}
+
+fn round_up_to_cluster(bytes: u64, cluster_size: u64) -> u64 {
+    if bytes == 0 || cluster_size == 0 {
+        return bytes;
+    }
+    bytes.saturating_add(cluster_size - 1) / cluster_size * cluster_size
+}
+
+fn file_record(path: &Path, metadata: &fs::Metadata, allocated_bytes: u64) -> LargeFile {
     LargeFile {
         path: path_string(path),
         name: path
@@ -295,7 +527,8 @@ fn file_record(path: &Path, metadata: &fs::Metadata) -> LargeFile {
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned(),
-        size_bytes: metadata.len(),
+        size_bytes: allocated_bytes,
+        logical_bytes: metadata.len(),
         modified_at: metadata
             .modified()
             .unwrap_or(UNIX_EPOCH)
@@ -330,6 +563,7 @@ fn folder_record(root: &Path, path: PathBuf, aggregate: Aggregate) -> FolderUsag
         path: path_string(&path),
         parent,
         size_bytes: aggregate.bytes,
+        logical_bytes: aggregate.logical_bytes,
         file_count: aggregate.files,
         depth,
     }
@@ -411,10 +645,38 @@ mod tests {
             PathBuf::from(r"C:\Users\Me"),
             Aggregate {
                 bytes: 42,
+                logical_bytes: 42,
                 files: 2,
             },
         );
         assert_eq!(item.parent.as_deref(), Some(r"C:\Users"));
         assert_eq!(item.depth, 2);
+    }
+
+    #[test]
+    fn cluster_rounding_matches_allocated_space_behavior() {
+        assert_eq!(round_up_to_cluster(10, 4096), 4096);
+        assert_eq!(round_up_to_cluster(4096, 4096), 4096);
+        assert_eq!(round_up_to_cluster(4097, 4096), 8192);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn skips_only_the_root_windows_directory() {
+        assert!(is_windows_system_directory(Path::new(r"C:\Windows")));
+        assert!(!is_windows_system_directory(Path::new(r"C:\Program Files")));
+        assert!(!is_windows_system_directory(Path::new(r"C:\Windows\Temp")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn hard_links_resolve_to_the_same_physical_file_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let original = temp.path().join("original.bin");
+        let linked = temp.path().join("linked.bin");
+        fs::write(&original, b"same physical bytes").unwrap();
+        fs::hard_link(&original, &linked).unwrap();
+
+        assert_eq!(physical_file_id(&original), physical_file_id(&linked));
     }
 }

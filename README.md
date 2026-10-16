@@ -56,8 +56,10 @@ Originals load straight from disk (no re-encoding); the cached thumbnail shows i
 **Disk Usage** — analyze an entire drive such as `C:\` or `D:\`, or choose a specific folder. Results can be
 opened folder-by-folder to reveal where space is used, with separate lists for the largest files and conservative
 cleanup suggestions. Scans run off the UI thread, report live progress, can be cancelled, stay entirely local,
-and never delete or modify files. Suggestions distinguish regeneratable cache/temp data from personal files that
-need careful review.
+and never delete or modify files. On Windows, Framer counts each physical file ID once so NTFS hard links do not
+inflate totals, skips symlinks/junctions and `C:\Windows`, but includes Program Files and ProgramData. The primary
+number is allocated space on disk; logical file size remains visible for comparison. Suggestions distinguish
+regeneratable cache/temp data from personal files that need careful review.
 
 **Safe by design**
 
