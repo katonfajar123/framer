@@ -9,6 +9,7 @@ Dokumen ini berlaku untuk setiap agen atau kontributor yang mengubah repository 
 3. Setiap commit yang dibuat **wajib** di-push ke remote branch yang sesuai sebelum handoff ke pengguna.
 4. Jangan memasukkan secret, token, file `.env`, database lokal, cache, build output, atau data media pengguna ke commit.
 5. Jangan mengubah atau menghapus file milik pengguna di luar scope tugas tanpa instruksi eksplisit.
+6. Folder `docs/` (draf artikel, screenshot, dan bahan tulisan) hanya untuk lokal. Folder ini dikecualikan lewat `.gitignore` dan **tidak boleh** di-commit atau di-push. Screenshot yang akan dipublikasikan wajib disensor lebih dulu dari path, nama folder pribadi, alamat email, dan identitas akun.
 
 ## Urutan kerja
 

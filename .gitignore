@@ -9,3 +9,6 @@ src-tauri/gen/
 .env.*
 !.env.example
 .DS_Store
+
+# Draf artikel, screenshot, dan bahan tulisan hanya untuk lokal; jangan di-commit
+docs/
