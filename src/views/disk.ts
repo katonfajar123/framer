@@ -16,12 +16,32 @@ import {
   formatCount,
   formatDateTime,
   plural,
+  timeAgo,
 } from "../lib/format";
 import { icon } from "../lib/icons";
 import { toast } from "../ui/toast";
+import { createDiskSession, type DiskTab } from "./disk-session";
 import type { View } from "./view";
 
-type Tab = "folders" | "files" | "recommendations";
+type Tab = DiskTab;
+
+/** Lives as long as the app, so a scan and its result survive switching to other screens. */
+const session = createDiskSession({
+  analyze: (path) => api.analyzeDisk(path),
+  cancel: () => void api.cancelDiskScan(),
+  notify: (message, kind) => toast(message, kind),
+});
+
+let listeningForProgress = false;
+function listenForProgress(): void {
+  if (listeningForProgress) return;
+  listeningForProgress = true;
+  void onEvent<DiskScanProgress>("disk-scan-progress", (next) =>
+    session.reportProgress(next),
+  ).catch(() => {
+    listeningForProgress = false;
+  });
+}
 
 const key = (path: string) =>
   path.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
@@ -335,44 +355,14 @@ function recommendationCard(
 
 export function createDiskView(scroller: HTMLElement): View {
   let disks: DiskRoot[] = [];
-  let analysis: DiskAnalysis | null = null;
-  let scanning = false;
-  let progress: DiskScanProgress | null = null;
-  let currentPath = "";
-  let tab: Tab = "folders";
   let disposed = false;
-  let unlisten: (() => void) | null = null;
+  listenForProgress();
 
   const reveal = (path: string) =>
     void api.openDiskPath(path).catch((error) => toast(String(error), "error"));
-  const cancel = () => {
-    void api.cancelDiskScan();
-    scanning = false;
-    progress = null;
-    render();
-  };
-  const analyze = async (path: string) => {
-    scanning = true;
-    progress = null;
-    analysis = null;
-    render();
-    try {
-      const result = await api.analyzeDisk(path);
-      if (disposed) return;
-      if (result.cancelled) {
-        toast("Disk analysis cancelled");
-        return;
-      }
-      analysis = result;
-      currentPath = result.root;
-      tab = "folders";
-    } catch (error) {
-      if (!disposed) toast(String(error), "error");
-    } finally {
-      scanning = false;
-      progress = null;
-      if (!disposed) render();
-    }
+  const cancel = () => session.cancel();
+  const analyze = (path: string) => {
+    void session.start(path);
   };
   const chooseFolder = async () => {
     const selected = await open({
@@ -380,12 +370,9 @@ export function createDiskView(scroller: HTMLElement): View {
       multiple: false,
       title: "Choose a drive or folder to analyze",
     });
-    if (selected) void analyze(selected);
+    if (selected) analyze(selected);
   };
-  const go = (path: string) => {
-    currentPath = path;
-    render();
-  };
+  const go = (path: string) => session.setPath(path);
 
   const renderLanding = () =>
     h(
@@ -427,9 +414,7 @@ export function createDiskView(scroller: HTMLElement): View {
         ? h(
             "div",
             { class: "disk-grid" },
-            ...disks.map((drive) =>
-              driveCard(drive, (path) => void analyze(path)),
-            ),
+            ...disks.map((drive) => driveCard(drive, analyze)),
           )
         : h(
             "div",
@@ -440,6 +425,7 @@ export function createDiskView(scroller: HTMLElement): View {
     );
 
   const renderResults = (result: DiskAnalysis) => {
+    const { currentPath, tab, completedAt } = session.state;
     const drive = disks.find((item) =>
       key(result.root).startsWith(key(item.path)),
     );
@@ -507,10 +493,16 @@ export function createDiskView(scroller: HTMLElement): View {
             {
               class: "subtle",
               type: "button",
-              onclick: () => {
-                analysis = null;
-                render();
-              },
+              onclick: () => analyze(result.root),
+            },
+            "Scan Again",
+          ),
+          h(
+            "button",
+            {
+              class: "subtle",
+              type: "button",
+              onclick: () => session.reset(),
             },
             "Analyze Another",
           ),
@@ -561,7 +553,7 @@ export function createDiskView(scroller: HTMLElement): View {
           h(
             "small",
             null,
-            `${(result.elapsedMs / 1000).toFixed(1)} seconds${result.truncated ? " · folder list capped" : ""}`,
+            `${(result.elapsedMs / 1000).toFixed(1)} seconds${result.truncated ? " · folder list capped" : ""}${completedAt ? ` · scanned ${timeAgo(completedAt / 1000)}` : ""}`,
           ),
         ),
       ),
@@ -583,10 +575,7 @@ export function createDiskView(scroller: HTMLElement): View {
               type: "button",
               role: "tab",
               aria: { selected: tab === id },
-              onclick: () => {
-                tab = id;
-                render();
-              },
+              onclick: () => session.setTab(id),
             },
             icon(iconName, 16),
             label,
@@ -609,24 +598,16 @@ export function createDiskView(scroller: HTMLElement): View {
   };
 
   function render(): void {
+    const { scanning, analysis, progress } = session.state;
     if (scanning) mount(scroller, scanningView(progress, cancel));
     else if (analysis) mount(scroller, renderResults(analysis));
     else mount(scroller, renderLanding());
   }
 
-  render();
-  void api
-    .listDisks()
-    .then((items) => {
-      if (!disposed) {
-        disks = items;
-        render();
-      }
-    })
-    .catch((error) => toast(String(error), "error"));
-  void onEvent<DiskScanProgress>("disk-scan-progress", (next) => {
-    if (!scanning || disposed) return;
-    progress = next;
+  /** Progress arrives often, so only the three changing texts are touched. */
+  function showProgress(): void {
+    const next = session.state.progress;
+    if (!next) return;
     const files = scroller.querySelector<HTMLElement>(
       ".disk-scan-stats strong",
     );
@@ -638,17 +619,30 @@ export function createDiskView(scroller: HTMLElement): View {
       path.textContent = next.currentPath;
       path.title = next.currentPath;
     }
-  }).then((stop) => {
-    if (disposed) stop();
-    else unlisten = stop;
+  }
+
+  const unsubscribe = session.subscribe((change) => {
+    if (disposed) return;
+    if (change === "progress") showProgress();
+    else render();
   });
+
+  render();
+  void api
+    .listDisks()
+    .then((items) => {
+      if (!disposed) {
+        disks = items;
+        render();
+      }
+    })
+    .catch((error) => toast(String(error), "error"));
 
   return {
     gallery: false,
     dispose: () => {
       disposed = true;
-      unlisten?.();
-      if (scanning) void api.cancelDiskScan();
+      unsubscribe();
       mount(scroller);
     },
   };
