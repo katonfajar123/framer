@@ -28,6 +28,8 @@ const LARGE_FILE_MIN: u64 = 100 * 1024 * 1024;
 const VERY_LARGE_FILE: u64 = 1024 * 1024 * 1024;
 const MAX_FOLDERS_RETURNED: usize = 50_000;
 const MAX_LARGE_FILES: usize = 150;
+const PROBE_BATCH: usize = 256;
+const MAX_PROBE_THREADS: usize = 8;
 
 #[derive(Default)]
 pub struct DiskScanner {
@@ -147,6 +149,25 @@ struct ByHandleFileInformation {
 }
 
 #[cfg(windows)]
+#[repr(C)]
+struct FileCompressionInfo {
+    compressed_file_size: i64,
+    compression_format: u16,
+    compression_unit_shift: u8,
+    chunk_shift: u8,
+    cluster_shift: u8,
+    reserved: [u8; 3],
+}
+
+/// What a single open handle can tell us about a file.
+#[derive(Default)]
+struct FileProbe {
+    id: Option<FileId>,
+    /// The value `GetCompressedFileSizeW` reports; `None` when the filesystem cannot say.
+    allocated: Option<u64>,
+}
+
+#[cfg(windows)]
 #[link(name = "Kernel32")]
 unsafe extern "system" {
     fn CreateFileW(
@@ -162,6 +183,12 @@ unsafe extern "system" {
     fn GetFileInformationByHandle(
         hFile: *mut c_void,
         lpFileInformation: *mut ByHandleFileInformation,
+    ) -> i32;
+    fn GetFileInformationByHandleEx(
+        hFile: *mut c_void,
+        FileInformationClass: i32,
+        lpFileInformation: *mut c_void,
+        dwBufferSize: u32,
     ) -> i32;
     fn GetCompressedFileSizeW(lpFileName: *const u16, lpFileSizeHigh: *mut u32) -> u32;
     fn GetLastError() -> u32;
@@ -256,6 +283,62 @@ fn scan(
     let cluster_size = allocation_unit_size(&root).unwrap_or(4 * 1024);
     let mut last_progress = Instant::now();
     let mut cancelled = false;
+    let probe_threads = std::thread::available_parallelism()
+        .map_or(4, |count| count.get())
+        .clamp(2, MAX_PROBE_THREADS);
+
+    // Walking is cheap, opening each file is not. Files are collected into batches whose
+    // handles are opened in parallel, then accounted for in walk order so hard-link
+    // de-duplication and totals stay deterministic.
+    let mut batch: Vec<(PathBuf, fs::Metadata)> = Vec::with_capacity(PROBE_BATCH);
+    let mut flush = |batch: &mut Vec<(PathBuf, fs::Metadata)>| {
+        let probes = probe_batch(batch, probe_threads);
+        for ((path, metadata), probe) in batch.drain(..).zip(probes) {
+            if let Some(file_id) = probe.id {
+                if !seen_file_ids.insert(file_id) {
+                    continue;
+                }
+            }
+            let logical = metadata.len();
+            let bytes = probe
+                .allocated
+                .unwrap_or_else(|| allocated_size(&path, logical, cluster_size));
+            file_count += 1;
+            total_bytes = total_bytes.saturating_add(bytes);
+            logical_bytes = logical_bytes.saturating_add(logical);
+            if bytes >= LARGE_FILE_MIN {
+                largest_files.push(file_record(&path, &metadata, bytes));
+            }
+            let mut ancestor = path.parent();
+            while let Some(folder) = ancestor {
+                if !folder.starts_with(&root) {
+                    break;
+                }
+                let aggregate = aggregates.entry(folder.to_path_buf()).or_default();
+                aggregate.bytes = aggregate.bytes.saturating_add(bytes);
+                aggregate.logical_bytes = aggregate.logical_bytes.saturating_add(logical);
+                aggregate.files += 1;
+                if folder == root {
+                    break;
+                }
+                ancestor = folder.parent();
+            }
+            if file_count.is_multiple_of(750) || last_progress.elapsed().as_millis() > 500 {
+                last_progress = Instant::now();
+                let _ = app.emit(
+                    "disk-scan-progress",
+                    DiskScanProgress {
+                        root: path_string(&root),
+                        current_path: path_string(&path),
+                        file_count,
+                        scanned_bytes: total_bytes,
+                        finished: false,
+                        cancelled: false,
+                    },
+                );
+            }
+        }
+    };
 
     for entry in WalkDir::new(&root)
         .follow_links(false)
@@ -273,7 +356,8 @@ fn scan(
                 continue;
             }
         };
-        let metadata = match fs::symlink_metadata(entry.path()) {
+        // On Windows walkdir keeps the metadata from the directory listing, so this costs no I/O.
+        let metadata = match entry.metadata() {
             Ok(metadata) => metadata,
             Err(_) => {
                 inaccessible += 1;
@@ -283,47 +367,13 @@ fn scan(
         if is_reparse_point(&metadata) || !metadata.is_file() {
             continue;
         }
-        if let Some(file_id) = physical_file_id(entry.path()) {
-            if !seen_file_ids.insert(file_id) {
-                continue;
-            }
+        batch.push((entry.into_path(), metadata));
+        if batch.len() >= PROBE_BATCH {
+            flush(&mut batch);
         }
-        let logical = metadata.len();
-        let bytes = allocated_size(entry.path(), logical, cluster_size);
-        file_count += 1;
-        total_bytes = total_bytes.saturating_add(bytes);
-        logical_bytes = logical_bytes.saturating_add(logical);
-        if bytes >= LARGE_FILE_MIN {
-            largest_files.push(file_record(entry.path(), &metadata, bytes));
-        }
-        let mut ancestor = entry.path().parent();
-        while let Some(folder) = ancestor {
-            if !folder.starts_with(&root) {
-                break;
-            }
-            let aggregate = aggregates.entry(folder.to_path_buf()).or_default();
-            aggregate.bytes = aggregate.bytes.saturating_add(bytes);
-            aggregate.logical_bytes = aggregate.logical_bytes.saturating_add(logical);
-            aggregate.files += 1;
-            if folder == root {
-                break;
-            }
-            ancestor = folder.parent();
-        }
-        if file_count.is_multiple_of(750) || last_progress.elapsed().as_millis() > 500 {
-            last_progress = Instant::now();
-            let _ = app.emit(
-                "disk-scan-progress",
-                DiskScanProgress {
-                    root: path_string(&root),
-                    current_path: path_string(entry.path()),
-                    file_count,
-                    scanned_bytes: total_bytes,
-                    finished: false,
-                    cancelled: false,
-                },
-            );
-        }
+    }
+    if !cancelled {
+        flush(&mut batch);
     }
 
     largest_files.sort_by_key(|file| Reverse(file.size_bytes));
@@ -379,7 +429,8 @@ fn should_traverse(entry: &walkdir::DirEntry) -> bool {
     if entry.file_type().is_symlink() {
         return false;
     }
-    fs::symlink_metadata(entry.path())
+    entry
+        .metadata()
         .map(|metadata| !is_reparse_point(&metadata))
         .unwrap_or(false)
 }
@@ -413,11 +464,14 @@ fn is_reparse_point(_metadata: &fs::Metadata) -> bool {
     false
 }
 
+/// Opening a file is by far the most expensive step of the scan, so the hard-link identity
+/// and the allocated size are both read through one handle.
 #[cfg(windows)]
-fn physical_file_id(path: &Path) -> Option<FileId> {
+fn probe_file(path: &Path) -> FileProbe {
     const FILE_READ_ATTRIBUTES: u32 = 0x80;
     const FILE_SHARE_ALL: u32 = 0x7;
     const OPEN_EXISTING: u32 = 3;
+    const FILE_COMPRESSION_INFO_CLASS: i32 = 8;
     const INVALID_HANDLE_VALUE: *mut c_void = -1isize as *mut c_void;
 
     let wide = wide_path(path);
@@ -434,28 +488,79 @@ fn physical_file_id(path: &Path) -> Option<FileId> {
         )
     };
     if handle == INVALID_HANDLE_VALUE {
-        return None;
+        return FileProbe::default();
     }
+
     let mut information = std::mem::MaybeUninit::<ByHandleFileInformation>::zeroed();
     // SAFETY: `handle` is valid and `information` points at writable, correctly sized memory.
-    let success = unsafe { GetFileInformationByHandle(handle, information.as_mut_ptr()) };
+    let id = if unsafe { GetFileInformationByHandle(handle, information.as_mut_ptr()) } != 0 {
+        // SAFETY: a non-zero return guarantees initialization.
+        let information = unsafe { information.assume_init() };
+        Some(FileId {
+            volume_serial: information.dwVolumeSerialNumber,
+            file_index: (u64::from(information.nFileIndexHigh) << 32)
+                | u64::from(information.nFileIndexLow),
+        })
+    } else {
+        None
+    };
+
+    let mut compression = std::mem::MaybeUninit::<FileCompressionInfo>::zeroed();
+    // SAFETY: `handle` is valid and the buffer size matches FILE_COMPRESSION_INFO.
+    let allocated = if unsafe {
+        GetFileInformationByHandleEx(
+            handle,
+            FILE_COMPRESSION_INFO_CLASS,
+            compression.as_mut_ptr().cast(),
+            std::mem::size_of::<FileCompressionInfo>() as u32,
+        )
+    } != 0
+    {
+        // SAFETY: a non-zero return guarantees initialization.
+        u64::try_from(unsafe { compression.assume_init() }.compressed_file_size).ok()
+    } else {
+        None
+    };
+
     // SAFETY: `handle` was returned by CreateFileW and is closed exactly once here.
     let _ = unsafe { CloseHandle(handle) };
-    if success == 0 {
-        return None;
-    }
-    // SAFETY: a non-zero return from GetFileInformationByHandle guarantees initialization.
-    let information = unsafe { information.assume_init() };
-    Some(FileId {
-        volume_serial: information.dwVolumeSerialNumber,
-        file_index: (u64::from(information.nFileIndexHigh) << 32)
-            | u64::from(information.nFileIndexLow),
-    })
+    FileProbe { id, allocated }
 }
 
 #[cfg(not(windows))]
-fn physical_file_id(_path: &Path) -> Option<FileId> {
-    None
+fn probe_file(_path: &Path) -> FileProbe {
+    FileProbe::default()
+}
+
+/// Probes every file of the batch, spreading the work over `threads` threads. The result is
+/// in the same order as `batch`.
+fn probe_batch(batch: &[(PathBuf, fs::Metadata)], threads: usize) -> Vec<FileProbe> {
+    let threads = threads.min(batch.len());
+    if threads <= 1 {
+        return batch.iter().map(|(path, _)| probe_file(path)).collect();
+    }
+    let chunk_len = batch.len().div_ceil(threads);
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = batch
+            .chunks(chunk_len)
+            .map(|chunk| {
+                scope.spawn(move || {
+                    chunk
+                        .iter()
+                        .map(|(path, _)| probe_file(path))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|worker| {
+                worker
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            })
+            .collect()
+    })
 }
 
 #[cfg(windows)]
@@ -677,6 +782,47 @@ mod tests {
         fs::write(&original, b"same physical bytes").unwrap();
         fs::hard_link(&original, &linked).unwrap();
 
-        assert_eq!(physical_file_id(&original), physical_file_id(&linked));
+        let original_id = probe_file(&original).id;
+        assert!(original_id.is_some());
+        assert_eq!(original_id, probe_file(&linked).id);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn parallel_probe_keeps_the_order_of_the_batch() {
+        let temp = tempfile::tempdir().unwrap();
+        let batch: Vec<(PathBuf, fs::Metadata)> = (0..40)
+            .map(|index| {
+                let path = temp.path().join(format!("file-{index}.bin"));
+                fs::write(&path, vec![1u8; index * 3]).unwrap();
+                let metadata = fs::metadata(&path).unwrap();
+                (path, metadata)
+            })
+            .collect();
+
+        let parallel = probe_batch(&batch, 4);
+        let sequential: Vec<_> = batch.iter().map(|(path, _)| probe_file(path)).collect();
+        assert_eq!(parallel.len(), batch.len());
+        for (left, right) in parallel.iter().zip(&sequential) {
+            assert_eq!(left.id, right.id);
+            assert_eq!(left.allocated, right.allocated);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn probe_reports_the_same_size_as_get_compressed_file_size() {
+        let temp = tempfile::tempdir().unwrap();
+        for (name, length) in [("empty.bin", 0usize), ("small.bin", 10), ("mid.bin", 5000)] {
+            let path = temp.path().join(name);
+            fs::write(&path, vec![7u8; length]).unwrap();
+            if let Some(allocated) = probe_file(&path).allocated {
+                assert_eq!(
+                    allocated,
+                    allocated_size(&path, length as u64, 4096),
+                    "{name}"
+                );
+            }
+        }
     }
 }
