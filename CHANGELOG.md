@@ -72,3 +72,4 @@ Entri hanya ditambahkan di akhir berkas, dikelompokkan per tanggal, dan memakai 
 - `09:49:51 +07:00` `fix` — Hasil analisis Disk Usage kini tetap tersimpan saat pindah ke menu lain lalu kembali, sehingga tidak perlu memindai ulang dari awal. Scan yang sedang berjalan juga tidak lagi dibatalkan otomatis saat berpindah menu; scan hanya berhenti lewat tombol Cancel Scan.
 - `09:49:51 +07:00` `feat` — Menambahkan tombol Scan Again pada hasil Disk Usage untuk memindai ulang lokasi yang sama, dan keterangan kapan scan terakhir selesai pada kartu Scan quality.
 - `09:49:51 +07:00` `test` — Menambahkan 12 pengujian untuk penyimpanan hasil scan antar menu, pembatalan, scan yang saling menggantikan, dan penanganan error pada Disk Usage.
+- `09:50:18 +07:00` `docs` — Menambahkan aturan di `AGENTS.md` bahwa commit dan deskripsi PR hanya memakai identitas Git pemilik repository, tanpa trailer `Co-Authored-By` atau atribusi asisten AI.
